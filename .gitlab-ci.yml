@@ -1,0 +1,111 @@
+stages:
+  - code_quality
+  - build
+  - test
+  - docker
+  - deploy
+
+code_quality:
+  stage: code_quality
+  tags:
+    - self-managed-runner
+  script:
+    - dotnet tool install --global dotnet-sonarscanner
+    - export PATH="$PATH:/root/.dotnet/tools"
+    - dotnet sonarscanner begin /k:"$SONAR_PROJECT_KEY" /d:sonar.login="$SONAR_TOKEN"
+    - dotnet build
+    - dotnet sonarscanner end /d:sonar.login="$SONAR_TOKEN"
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev"'
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+
+build:
+  stage: build
+  tags:
+    - self-managed-runner
+  script:
+    - dotnet restore
+    - dotnet build --configuration Release
+  artifacts:
+    paths:
+      - bin/
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev"'
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+
+unit_tests:
+  stage: test
+  tags:
+    - self-managed-runner
+  script:
+    - dotnet test --configuration Release
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev"'
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+
+integration_tests:
+  stage: test
+  tags:
+    - self-managed-runner
+  script:
+    - dotnet test --filter Category=Integration
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev"'
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+
+docker_build:
+  stage: docker
+  tags:
+    - self-managed-runner
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t "$DOCKER_REGISTRY/$DOCKER_IMAGE_NAME:latest" .
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev"'
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+
+docker_push:
+  stage: docker
+  tags:
+    - self-managed-runner
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin "$DOCKER_REGISTRY"
+    - docker tag "$DOCKER_REGISTRY/$DOCKER_IMAGE_NAME:latest" "$DOCKER_REGISTRY/$DOCKER_IMAGE_NAME:latest"
+    - docker push "$DOCKER_REGISTRY/$DOCKER_IMAGE_NAME:latest"
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev"'
+    - if: '$CI_COMMIT_REF_NAME == "main"'
+
+deploy_to_dev:
+  stage: deploy
+  tags:
+    - self-managed-runner
+  script:
+    - echo "$KUBE_CONFIG" | base64 --decode > /root/.kube/config
+    - kubectl apply -f k8s/deployment-dev.yaml
+    - kubectl apply -f k8s/service-dev.yaml
+  environment:
+    name: dev
+    url: http://your-dev-url
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "dev"'
+
+deploy_to_production:
+  stage: deploy
+  tags:
+    - self-managed-runner
+  script:
+    - echo "$KUBE_CONFIG" | base64 --decode > /root/.kube/config
+    - kubectl apply -f k8s/deployment.yaml
+    - kubectl apply -f k8s/service.yaml
+  environment:
+    name: production
+    url: http://your-production-url
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_REF_NAME == "main"'
